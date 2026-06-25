@@ -202,7 +202,42 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ broker }),
     }),
+
+  // ── VeADK 交易助手 API ────────────────────────────────
+  tradingChat: (message: string, session_id?: string) =>
+    request<TradingChatResponse>("/api/trading/chat", {
+      method: "POST",
+      body: JSON.stringify({ message, session_id }),
+    }),
+  tradingOrderPreview: (message: string, session_id?: string) =>
+    request<TradingChatResponse>("/api/trading/order/preview", {
+      method: "POST",
+      body: JSON.stringify({ message, session_id }),
+    }),
+  tradingOrderConfirm: (message: string, session_id?: string) =>
+    request<TradingChatResponse>("/api/trading/order/confirm", {
+      method: "POST",
+      body: JSON.stringify({ message, session_id }),
+    }),
+  tradingOrderCommit: (card_id: string) =>
+    request<OrderCommitResponse>(`/api/trading/order/commit/${card_id}`, {
+      method: "POST",
+    }),
 };
+
+// ── Trading API types ────────────────────────────────────
+
+export interface TradingChatResponse {
+  text: string;
+  cards: Record<string, unknown>[];
+  session_id: string;
+}
+
+export interface OrderCommitResponse {
+  status: string;
+  order_id?: string;
+  message?: string;
+}
 
 // --- Swarm types ---
 

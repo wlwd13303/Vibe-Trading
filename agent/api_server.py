@@ -31,6 +31,7 @@ from rich.console import Console
 
 from src.goal.context import default_goal_criteria
 from src.ui_services import build_run_analysis, load_run_context
+from src.trading_adapter.api import trading_router
 
 # UTF-8 on Windows
 import sys as _sys
@@ -557,15 +558,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── VeADK 交易助手路由 ─────────────────────────────────────────
+app.include_router(trading_router, prefix="/api/trading")
+
 
 @app.middleware("http")
 async def _reject_untrusted_loopback_host(request: Request, call_next):
-    """Block DNS-rebinding Host headers before loopback auth bypasses run."""
-    if _is_local_client(request) and not _is_allowed_loopback_host(request.headers.get("host", "")):
-        return JSONResponse(
-            status_code=status.HTTP_403_FORBIDDEN,
-            content={"detail": "Untrusted local API host"},
-        )
+    """Block DNS-rebinding Host headers before loopback auth bypasses run.
+
+    POC 阶段：设置 VIBE_TRADING_ALLOW_ANY_HOST=1 可绕过此检查（用于内网穿透）。"""
+    if not os.getenv("VIBE_TRADING_ALLOW_ANY_HOST"):
+        if _is_local_client(request) and not _is_allowed_loopback_host(request.headers.get("host", "")):
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": "Untrusted local API host"},
+            )
     return await call_next(request)
 
 
@@ -3315,7 +3322,7 @@ def serve_main(argv: list[str] | None = None) -> int:
         print("[dev] Frontend: http://localhost:5173")
         print(f"[dev] API: http://localhost:{args.port}")
     elif frontend_dist.exists():
-        if not any(route.path == "/" for route in app.routes):
+        if not any(getattr(route, "path", None) == "/" for route in app.routes):
             app.mount("/", SPAStaticFiles(directory=str(frontend_dist), html=True), name="frontend")
         print(f"[prod] Frontend served from {frontend_dist}")
     else:

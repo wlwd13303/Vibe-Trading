@@ -1,7 +1,10 @@
 /** Chat message types */
 export type AgentMessageType =
   | "user" | "thinking" | "tool_call" | "tool_result"
-  | "answer" | "error" | "run_complete" | "compact" | "swarm_status";
+  | "answer" | "error" | "run_complete" | "compact" | "swarm_status"
+  // ── 交易场景卡片 ──
+  | "account_summary" | "position_list" | "order_confirm"
+  | "execution_list" | "price_quote";
 
 export type SwarmAgentDisplayStatus =
   | "waiting"

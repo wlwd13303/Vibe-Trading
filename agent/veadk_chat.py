@@ -34,12 +34,20 @@ if not os.getenv("MODEL_AGENT_API_KEY") and os.getenv("DEEPSEEK_API_KEY"):
 os.environ["LITELLM_LOG"] = "ERROR"
 os.environ["VEADK_LOG_LEVEL"] = "WARNING"
 
+import logging
+
+# 强制关闭所有 DEBUG 级别日志（包括 SDK、HTTP 库、veadk 内部等）
+logging.basicConfig(level=logging.WARNING, force=True)
+for noisy in ("httpx", "httpcore", "urllib3", "assetsplit_sdk", "veadk", "LiteLLM"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
+
 import asyncio
 import json
 from datetime import date
 from typing import Any
 
 from veadk import Agent, Runner
+from google.adk.agents.run_config import RunConfig
 
 # ── 工具函数：VeADK Tool = 带类型标注和 docstring 的函数 ─────
 
@@ -233,7 +241,10 @@ def get_today_executions() -> dict[str, Any]:
 
 
 def get_current_price(ts_code: str) -> dict[str, Any]:
-    """查询某只股票或指数的当前行情价格。
+    """查询某只股票或指数的当前实时行情价格。
+
+    优先通过 AssetSplit SDK 获取实时行情（最新成交价 + 更新时间），
+    失败时回退到 Tushare 历史日线。
 
     当用户问"XX股价""XX多少钱""XX行情"时调用。
     需要先通过 security_resolve 确认代码。
@@ -242,14 +253,43 @@ def get_current_price(ts_code: str) -> dict[str, Any]:
         ts_code: 标准代码，如 "600036.SH"、"300750.SZ"、"399006.SZ"
 
     Returns:
-        dict: 最新行情数据，含收盘价、涨跌幅、成交量等
+        dict: 行情数据，包含 price（最新价）、update_time、source 等
     """
-    from src.data_sources.market_data.securities import get_current_price as _get_price
+    from src.trading_adapter.client import get_adapter as get_trading_adapter
 
-    result = _get_price(ts_code.strip().upper())
-    if result is None:
+    # 1) 优先走 AssetSplit SDK 实时行情
+    try:
+        adapter = get_trading_adapter()
+        result = adapter.get_realtime_price(ts_code.strip().upper())
+        if result["status"] == "ok":
+            d = result["data"]
+            return {
+                "status": "ok",
+                "data": d,
+                "message": (
+                    f"{d['stock_code']} 最新价 {d['price']:.2f} 元"
+                    f"（数据来源：AssetSplit 实时行情，更新于 {d.get('update_time', '未知')}）"
+                ),
+                "source": "assetsplit_sdk",
+            }
+        # SDK 失败时静默降级
+    except RuntimeError:
+        pass  # 未连接交易接口
+    except Exception:
+        pass  # 其他异常，降级到 Tushare
+
+    # 2) 降级：Tushare 日线
+    from src.data_sources.market_data.securities import get_current_price as _get_tushare_price
+
+    tushare_result = _get_tushare_price(ts_code.strip().upper())
+    if tushare_result is None:
         return {"status": "error", "error": f"未找到{ts_code}的行情数据"}
-    return {"status": "ok", "data": result}
+    return {
+        "status": "ok",
+        "data": tushare_result,
+        "source": "tushare",
+        "message": f"行情数据来源：Tushare 日线",
+    }
 
 
 def get_account_summary() -> dict[str, Any]:
@@ -328,6 +368,51 @@ def get_open_orders() -> dict[str, Any]:
         return {"status": "error", "error": f"未连接到交易接口: {e}"}
     except Exception as e:
         return {"status": "error", "error": f"查询挂单失败: {e}"}
+
+
+def get_all_orders(limit: int = 50) -> dict[str, Any]:
+    """查询全部委托（含废单、已成交、已撤单）。
+
+    当用户问"所有委托""查全部订单""看看我下了哪些单"时调用。
+    返回每笔委托的代码、名称、方向、数量、价格、状态及状态说明。
+
+    Args:
+        limit: 最多返回多少条，默认 50
+
+    Returns:
+        dict: 全部委托列表
+    """
+    from src.trading_adapter.client import get_adapter
+
+    try:
+        adapter = get_adapter()
+        orders = adapter.get_all_orders(limit=limit)
+        if not orders:
+            return {"status": "ok", "data": [], "count": 0, "message": "暂无委托记录"}
+
+        return {
+            "status": "ok",
+            "data": [
+                {
+                    "order_id": o["order_id"],
+                    "symbol": o["symbol"],
+                    "name": o["name"],
+                    "side": "买入" if o["side"].upper() in ("BUY", "B") else "卖出",
+                    "quantity": o["quantity"],
+                    "price": o["price"],
+                    "status": o["status"],
+                    "status_message": o.get("status_message", ""),
+                    "created_at": o["created_at"],
+                }
+                for o in orders
+            ],
+            "count": len(orders),
+            "message": f"共查询到 {len(orders)} 笔委托",
+        }
+    except RuntimeError as e:
+        return {"status": "error", "error": f"未连接到交易接口: {e}"}
+    except Exception as e:
+        return {"status": "error", "error": f"查询全部委托失败: {e}"}
 
 
 def place_order(
@@ -414,6 +499,7 @@ TOOLS = [
     get_current_price,
     get_account_summary,
     get_open_orders,
+    get_all_orders,
     place_order,
     cancel_order,
 ]
@@ -428,6 +514,7 @@ INSTRUCTION = """你是证券交易助手，帮助用户管理账户、查询市
 - get_positions: 查询全部持仓
 - get_position_detail: 查询单只标的的持仓详情（成本、投入金额）
 - get_open_orders: 查询当前未成交的挂单
+- get_all_orders: 查询全部委托（含废单、已成交、已撤单）
 - get_today_executions: 查询今日成交记录
 
 — 市场数据 —
@@ -447,21 +534,119 @@ INSTRUCTION = """你是证券交易助手，帮助用户管理账户、查询市
 4. 不要编造数据，如实告知用户。
 
 ### 交易类规则（写操作 — 高风险）
-5. **下单前必须确认**：在调用 place_order 之前，必须向用户完整展示：
-   - 标的代码和名称
-   - 方向（买入/卖出）
-   - 数量
-   - 价格类型（限价/市价）
-   - 限价单的价格
-   获得用户明确确认后才能下单。
-6. **撤单前必须确认**：必须告知用户要取消的订单详情，获得明确确认后才能执行。
+5. **你只负责生成下单草案（JSON 卡片），不负责执行下单。**
+6. 下单前需要收集完整的参数：标的代码和名称、方向（买入/卖出）、数量、价格类型（限价/市价）、限价单的价格。
 7. **资金检查**：买入前建议先用 get_account_summary 确认可用资金是否充足。
 8. **持仓检查**：卖出前建议先用 get_positions 检查可用持仓数量是否足够。
-9. **代码确认**：下单前必须先通过 security_resolve 确认股票代码，不能直接使用用户输入的代码或名称。
-10. 如果下单或撤单返回错误，如实展示错误信息，不要重试或修改参数。
+9. **代码确认**：生成草案前必须先通过 security_resolve 确认股票代码，不能直接使用用户输入的代码或名称。
+10. **撤单前必须确认**：必须告知用户要取消的订单详情，获得明确确认后才能执行。
+11. 如果撤单返回错误，如实展示错误信息，不要重试或修改参数。
+12. **不要直接调用 place_order**，该函数由前端点击确认按钮后由后端安全调用。
 
 ### 数据分析类
 11. 涉及条件筛选（如"最近一个月买入且浮亏超过10%"），先用 get_positions 获取全部持仓，再用 get_today_executions 获取今日成交，自己分析并回答。
+
+## 结构化输出（重要）
+
+在返回查询结果（账户资产、持仓、成交、行情）或交易预览时，**在回答的最后附加一个 json 代码块**，用于前端渲染卡片。格式：
+
+### 账户资产（get_account_summary 后）
+```json
+{
+  "kind": "account_summary",
+  "total_asset": 2000911.33,
+  "cash_available": 1873167.33,
+  "market_value": 127744.00,
+  "frozen_cash": 0.00,
+  "unrealized_pnl": 1130.24
+}
+```
+
+### 持仓列表（get_positions 后）
+```json
+{
+  "kind": "position_list",
+  "positions": [
+    {"symbol": "600036.SH", "name": "招商银行", "quantity": 1000, "cost_price": 32.50, "market_price": 42.50, "market_value": 42500.00, "unrealized_pnl": 10000.00, "unrealized_pnl_ratio": 30.77}
+  ]
+}
+```
+
+### 今日成交（get_today_executions 后）
+```json
+{
+  "kind": "execution_list",
+  "executions": [
+    {"time": "09:30:00", "symbol": "600036.SH", "name": "招商银行", "side": "买入", "quantity": 100, "price": 42.50, "amount": 4250.00, "fee": 5.00}
+  ],
+  "summary": {"buy_amount": 4250.00, "sell_amount": 0.00, "total_fee": 5.00}
+}
+```
+
+### 实时行情（get_current_price 后）
+```json
+{
+  "kind": "price_quote",
+  "stock_code": "600036.SH",
+  "price": 42.50,
+  "update_time": "2026-06-25 14:30:00",
+  "pre_close": 42.00
+}
+```
+
+### 下单预览（place_order 前展示给用户确认）
+```json
+{
+  "kind": "order_confirm",
+  "stock_code": "600036.SH",
+  "stock_name": "招商银行",
+  "side": "BUY",
+  "quantity": 100,
+  "price": 42.50,
+  "price_type": "LIMIT",
+  "estimated_amount": 4250.00,
+  "risk_tips": "请确认账户可用资金充足"
+}
+```
+
+### 下单结果（place_order 执行后）
+```json
+{
+  "kind": "order_result",
+  "status": "success",
+  "order_id": "order_123456",
+  "stock_code": "600036.SH",
+  "stock_name": "招商银行",
+  "side": "BUY",
+  "quantity": 100,
+  "price": 42.50,
+  "message": "下单成功"
+}
+```
+
+如果下单失败，status 设为 "failed"，message 说明错误原因。
+
+### 订单类型选择（用户未指定限价/市价时）
+```json
+{
+  "kind": "order_type_selector",
+  "stock_code": "600036.SH",
+  "stock_name": "招商银行"
+}
+```
+
+### 价格输入（用户选择了限价单但未指定价格时，需包含涨跌停参考价）
+```json
+{
+  "kind": "price_input",
+  "stock_code": "600036.SH",
+  "stock_name": "招商银行",
+  "pre_close": 42.00,
+  "limit_up": 46.20,
+  "limit_down": 37.80
+}
+```
+价格输入卡片会显示昨收、涨停、跌停价格参考，用户输入价格后点击确认。
 """
 
 # ── 交互入口 ─────────────────────────────────────────────────
@@ -485,6 +670,7 @@ async def main():
     print("  • 我在宁德时代上投了多少钱？成本多少？")
     print("  • 今天成交了哪些？")
     print("  • 当前有哪些挂单/委托？")
+    print("  • 我下了哪些单？（全部委托含废单）")
     print()
     print("行情查询：")
     print("  • 帮我查一下创业板指的代码")
@@ -518,8 +704,11 @@ async def main():
             answer = await runner.run(
                 messages=user_input,
                 session_id=session_id,
+                run_config=RunConfig(max_llm_calls=200),
             )
             print(answer)
+        except asyncio.CancelledError:
+            print("请求被中断，请重试一次")
         except Exception as e:
             print(f"抱歉，处理出错: {e}")
 

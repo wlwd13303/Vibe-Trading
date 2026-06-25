@@ -8,6 +8,11 @@ import { formatTimestamp } from "@/lib/formatters";
 import type { AgentMessage } from "@/types/agent";
 import { AgentAvatar } from "./AgentAvatar";
 import { RunCompleteCard } from "./RunCompleteCard";
+import { AccountSummaryCard } from "@/components/trading/AccountSummaryCard";
+import { PositionTable } from "@/components/trading/PositionTable";
+import { OrderConfirmCard, type OrderPreviewData } from "@/components/trading/OrderConfirmCard";
+import { ExecutionList } from "@/components/trading/ExecutionList";
+import { PriceQuoteCard } from "@/components/trading/PriceQuoteCard";
 
 const remarkPlugins = [remarkGfm];
 const rehypePlugins = [rehypeHighlight];
@@ -81,6 +86,91 @@ export const MessageBubble = memo(function MessageBubble({ msg, onRetry }: Props
 
   if (msg.type === "run_complete" && msg.runId) {
     return <RunCompleteCard msg={msg} />;
+  }
+
+  // ── 交易场景卡片 ──────────────────────────────────────────
+
+  if (msg.type === "account_summary") {
+    try {
+      const data = JSON.parse(msg.content);
+      return (
+        <div className="flex gap-3">
+          <AgentAvatar />
+          <div className="flex-1 min-w-0">
+            <AccountSummaryCard data={data} />
+          </div>
+        </div>
+      );
+    } catch {
+      // fall through to default render
+    }
+  }
+
+  if (msg.type === "position_list") {
+    try {
+      const data = JSON.parse(msg.content);
+      const items = Array.isArray(data) ? data : data.positions ?? [];
+      return (
+        <div className="flex gap-3">
+          <AgentAvatar />
+          <div className="flex-1 min-w-0">
+            <PositionTable data={items} />
+          </div>
+        </div>
+      );
+    } catch {
+      // fall through
+    }
+  }
+
+  if (msg.type === "order_confirm") {
+    try {
+      const data: OrderPreviewData = JSON.parse(msg.content);
+      return (
+        <div className="flex gap-3">
+          <AgentAvatar />
+          <div className="flex-1 min-w-0">
+            <OrderConfirmCard data={data} />
+          </div>
+        </div>
+      );
+    } catch {
+      // fall through
+    }
+  }
+
+  if (msg.type === "execution_list") {
+    try {
+      const data = JSON.parse(msg.content);
+      const items = Array.isArray(data) ? data : data.executions ?? [];
+      const summary = data.summary;
+      return (
+        <div className="flex gap-3">
+          <AgentAvatar />
+          <div className="flex-1 min-w-0">
+            <ExecutionList data={items} summary={summary} />
+          </div>
+        </div>
+      );
+    } catch {
+      // fall through
+    }
+  }
+
+  if (msg.type === "price_quote") {
+    try {
+      const data = JSON.parse(msg.content);
+      return (
+        <div className="flex gap-3">
+          <AgentAvatar />
+          <div className="flex-1 min-w-0">
+            <PriceQuoteCard data={data} />
+          </div>
+        </div>
+      );
+    } catch {
+      // fall through
+    }
   }
 
   if (msg.type === "error") {

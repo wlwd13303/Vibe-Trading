@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { useEffect, useState } from "react";
 import { Link, Outlet, useLocation, useSearchParams } from "react-router-dom";
-import { Activity, BarChart3, Bot, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Settings, Layers, Loader2 } from "lucide-react";
+import { Bot, Languages, Moon, Sun, Plus, Trash2, Pencil, MessageSquare, ChevronsLeft, ChevronsRight, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { api, type SessionItem } from "@/lib/api";
@@ -15,12 +15,7 @@ export function Layout() {
   const { t, i18n: i18nHook } = useTranslation();
 
   const NAV = [
-    { to: "/", icon: BarChart3, label: t('layout.home') },
-    { to: "/agent", icon: Bot, label: t('layout.agent') },
-    { to: "/runtime", icon: Activity, label: t('layout.runtime') },
-    { to: "/alpha-zoo", icon: Layers, label: t('layout.alphaZoo') },
-    { to: "/settings", icon: Settings, label: t('layout.settings') },
-    { to: "/correlation", icon: BarChart3, label: t('layout.correlation') },
+    { to: "/trading", icon: Bot, label: "交易助手" },
   ];
   const { pathname } = useLocation();
   const [searchParams] = useSearchParams();
@@ -81,7 +76,7 @@ export function Layout() {
         {/* Brand */}
         <div className={cn("border-b", collapsed ? "p-2 flex justify-center" : "p-4")}>
           <Link to="/" className={cn("flex items-center font-bold text-base tracking-tight", collapsed ? "justify-center" : "gap-2")}>
-            <BarChart3 className="h-5 w-5 text-primary shrink-0" />
+            <Bot className="h-5 w-5 text-primary shrink-0" />
             {!collapsed && "Vibe-Trading"}
           </Link>
         </div>
@@ -110,8 +105,8 @@ export function Layout() {
           })}
         </nav>
 
-        {/* Sessions — hidden when collapsed */}
-        {!collapsed && (
+        {/* Sessions — only on /agent page */}
+        {!collapsed && pathname.startsWith("/agent") && (
           <div className="flex-1 overflow-auto border-t mt-2 flex flex-col">
             <div className="flex items-center justify-between px-4 py-2">
               <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
