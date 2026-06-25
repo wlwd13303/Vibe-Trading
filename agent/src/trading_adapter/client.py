@@ -149,6 +149,23 @@ class AssetSplitAdapter(TradingAdapter):
             logger.warning("get_positions failed: %s", exc)
             return []
 
+    def _trade_to_execution(self, item) -> Execution:
+        """统一把 SDK TradeResponse 转成 Execution 对象。"""
+        side = str(getattr(item, "side", "BUY"))
+        qty = float(getattr(item, "volume", 0))
+        price = float(getattr(item, "price", 0))
+        amount = float(getattr(item, "amount", qty * price))
+        return Execution(
+            datetime=str(getattr(item, "trade_time", "")),
+            symbol=str(getattr(item, "stock_code", "")),
+            name=str(getattr(item, "stock_name", "")),
+            side=side,
+            quantity=qty,
+            price=price,
+            amount=amount,
+            fee=float(getattr(item, "fee", 0)),
+        )
+
     def get_today_executions(self) -> list[Execution]:
         self._ensure_connected()
         try:
@@ -156,25 +173,47 @@ class AssetSplitAdapter(TradingAdapter):
             if result is None:
                 return []
             raw_list = result if isinstance(result, (list, tuple)) else []
-            executions: list[Execution] = []
-            for item in raw_list:
-                side = str(getattr(item, "side", "BUY"))
-                qty = float(getattr(item, "volume", 0))
-                price = float(getattr(item, "price", 0))
-                amount = float(getattr(item, "amount", qty * price))
-                executions.append(Execution(
-                    datetime=str(getattr(item, "trade_time", "")),
-                    symbol=str(getattr(item, "stock_code", "")),
-                    name=str(getattr(item, "stock_name", "")),
-                    side=side,
-                    quantity=qty,
-                    price=price,
-                    amount=amount,
-                    fee=float(getattr(item, "fee", 0)),
-                ))
-            return executions
+            return [self._trade_to_execution(item) for item in raw_list]
         except Exception as exc:
             logger.warning("get_today_executions failed: %s", exc)
+            return []
+
+    def get_trade_history(
+        self,
+        start_date: str = "",
+        end_date: str = "",
+        stock_code: str = "",
+        limit: int = 100,
+    ) -> list[Execution]:
+        """按日期范围查询历史成交记录。
+
+        Args:
+            start_date: 开始日期 YYYY-MM-DD，空则从 2000-01-01 起
+            end_date: 结束日期 YYYY-MM-DD，空则到当日
+            stock_code: 股票代码过滤，空表示全部
+            limit: 最多返回条数
+
+        Returns:
+            list[Execution]: 成交记录列表
+        """
+        self._ensure_connected()
+        try:
+            # SDK 默认只查当日，用户未指定日期时拓宽到全部历史
+            effective_start = start_date or "2000-01-01"
+            effective_end = end_date or date.today().strftime("%Y-%m-%d")
+
+            result = self._sdk.trading.trades.get_trades_history(
+                start_date=effective_start,
+                end_date=effective_end,
+                stock_code=stock_code or None,
+                limit=limit,
+            )
+            if result is None:
+                return []
+            raw_list = result if isinstance(result, (list, tuple)) else []
+            return [self._trade_to_execution(item) for item in raw_list]
+        except Exception as exc:
+            logger.warning("get_trade_history failed: %s", exc)
             return []
 
     def _order_to_dict(self, o) -> dict[str, Any]:

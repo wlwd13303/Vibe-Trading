@@ -240,6 +240,76 @@ def get_today_executions() -> dict[str, Any]:
         return {"status": "error", "error": f"查询今日成交失败: {e}"}
 
 
+def get_trade_history(
+    stock_code: str = "",
+    start_date: str = "",
+    end_date: str = "",
+    limit: int = 100,
+) -> dict[str, Any]:
+    """查询历史成交记录。
+
+    当用户问"历史成交""过去N个月成交""某只股票的成交记录""盈亏分析"时调用。
+    支持按股票代码和日期范围过滤。
+
+    Args:
+        stock_code: 股票代码过滤（可选），如 "600036.SH"
+        start_date: 开始日期 YYYY-MM-DD（可选）
+        end_date: 结束日期 YYYY-MM-DD（可选）
+        limit: 最多返回条数，默认 100
+
+    Returns:
+        dict: 历史成交数据
+    """
+    from src.trading_adapter.client import get_adapter
+
+    try:
+        adapter = get_adapter()
+        trades = adapter.get_trade_history(
+            stock_code=stock_code.strip() if stock_code else "",
+            start_date=start_date.strip() if start_date else "",
+            end_date=end_date.strip() if end_date else "",
+            limit=limit,
+        )
+        if not trades:
+            return {"status": "ok", "data": [], "count": 0, "message": "未查询到成交记录"}
+
+        buy_total = sum(t.amount for t in trades if t.side.lower() in ("buy", "b"))
+        sell_total = sum(t.amount for t in trades if t.side.lower() in ("sell", "s"))
+
+        return {
+            "status": "ok",
+            "data": [
+                {
+                    "time": t.datetime,
+                    "symbol": t.symbol,
+                    "name": t.name,
+                    "side": "买入" if t.side.lower() in ("buy", "b") else "卖出",
+                    "quantity": t.quantity,
+                    "price": round(t.price, 4),
+                    "amount": round(t.amount, 2),
+                    "fee": round(t.fee, 4),
+                }
+                for t in trades
+            ],
+            "count": len(trades),
+            "summary": {
+                "buy_amount": round(buy_total, 2),
+                "sell_amount": round(sell_total, 2),
+                "total_fee": round(sum(t.fee for t in trades), 4),
+                "trade_count": len(trades),
+            },
+            "message": (
+                f"查询到 {len(trades)} 笔成交"
+                + (f"，涉及 {stock_code}" if stock_code else "")
+                + f"，买入 {buy_total:.2f} 元，卖出 {sell_total:.2f} 元"
+            ),
+        }
+    except RuntimeError as e:
+        return {"status": "error", "error": f"未连接到交易接口: {e}"}
+    except Exception as e:
+        return {"status": "error", "error": f"查询历史成交失败: {e}"}
+
+
 def get_current_price(ts_code: str) -> dict[str, Any]:
     """查询某只股票或指数的当前实时行情价格。
 
@@ -496,6 +566,7 @@ TOOLS = [
     get_positions,
     get_position_detail,
     get_today_executions,
+    get_trade_history,
     get_current_price,
     get_account_summary,
     get_open_orders,
@@ -516,6 +587,7 @@ INSTRUCTION = """你是证券交易助手，帮助用户管理账户、查询市
 - get_open_orders: 查询当前未成交的挂单
 - get_all_orders: 查询全部委托（含废单、已成交、已撤单）
 - get_today_executions: 查询今日成交记录
+- get_trade_history: 查询历史成交记录（支持按股票代码和日期范围过滤）
 
 — 市场数据 —
 - security_resolve: 解析股票/指数名称到标准代码
@@ -528,10 +600,11 @@ INSTRUCTION = """你是证券交易助手，帮助用户管理账户、查询市
 ## 重要规则
 
 ### 查询类规则（只读操作）
-1. 查询某只标的的详情时，先用 security_resolve 确认代码，再用 get_position_detail。
+1. 查询某只标的的详情时，先用 security_resolve 确认代码。
 2. 如果 security_resolve 返回多个候选，必须让用户确认，不能自行选择。
-3. 回答盈亏、成本时必须说明计算口径。
-4. 不要编造数据，如实告知用户。
+3. **「花了多少钱」= 历史累计买入金额**（调 get_trade_history 计算所有买入成交的 amount 之和）；**「持仓成本」= 当前持仓数量 × 成本价**（调 get_positions / get_position_detail）。
+4. 回答盈亏、成本、花费时必须说明计算口径（历史累计买入 vs 当前持仓成本）。
+5. 不要编造数据，如实告知用户。
 
 ### 交易类规则（写操作 — 高风险）
 5. **你只负责生成下单草案（JSON 卡片），不负责执行下单。**
